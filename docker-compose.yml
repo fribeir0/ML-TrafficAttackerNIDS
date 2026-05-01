@@ -5,8 +5,13 @@ services:
     container_name: sensor01
     volumes:
       - ./sensors:/app
+      - ./sensors/services:/services
     working_dir: /app
-    command: sh -c "pip install -q requests && python sensor.py sensor01"
+    command: >
+      sh -c "pip install -q requests flask paramiko &&
+             python /services/fake_ssh.py &
+             python /services/fake_http.py &
+             python sensor.py sensor01"
     networks:
       iotnet:
         ipv4_address: 172.30.0.11
@@ -16,8 +21,12 @@ services:
     container_name: sensor02
     volumes:
       - ./sensors:/app
+      - ./sensors/services:/services
     working_dir: /app
-    command: sh -c "pip install -q requests && python sensor.py sensor02"
+    command: >
+      sh -c "pip install -q requests &&
+             python /services/fake_mqtt.py &
+             python sensor.py sensor02"
     networks:
       iotnet:
         ipv4_address: 172.30.0.12
@@ -27,8 +36,14 @@ services:
     container_name: sensor03
     volumes:
       - ./sensors:/app
+      - ./sensors/services:/services
     working_dir: /app
-    command: sh -c "pip install -q requests && python sensor.py sensor03"
+    command: >
+      sh -c "pip install -q requests flask paramiko &&
+             python /services/fake_ssh.py &
+             python /services/fake_http.py &
+             python /services/fake_mqtt.py &
+             python sensor.py sensor03"
     networks:
       iotnet:
         ipv4_address: 172.30.0.13
@@ -45,14 +60,13 @@ services:
         ipv4_address: 172.30.0.100
 
   attacker:
-    # Imagem customizada com todas as ferramentas de ataque
     build:
       context: ./attacker
       dockerfile: Dockerfile
     container_name: botnet-simulator
     volumes:
       - ./attacker:/app
-      - ./dataset/labels:/labels   # label logger escreve aqui
+      - ./dataset/labels:/labels
     working_dir: /app
     command: tail -f /dev/null
     networks:
@@ -60,7 +74,7 @@ services:
         ipv4_address: 172.30.0.200
     cap_add:
       - NET_ADMIN
-      - NET_RAW   # necessário para hping3 (SYN flood com raw sockets)
+      - NET_RAW
 
   monitor:
     image: nicolaka/netshoot
