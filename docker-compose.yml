@@ -1,0 +1,74 @@
+services:
+  sensor01:
+    image: python:3.11-slim
+    container_name: sensor01
+    volumes:
+      - ./sensors:/app
+    working_dir: /app
+    command: sh -c "pip install -q requests && python sensor.py sensor01"
+    networks:
+      iotnet:
+        ipv4_address: 172.30.0.11
+
+  sensor02:
+    image: python:3.11-slim
+    container_name: sensor02
+    volumes:
+      - ./sensors:/app
+    working_dir: /app
+    command: sh -c "pip install -q requests && python sensor.py sensor02"
+    networks:
+      iotnet:
+        ipv4_address: 172.30.0.12
+
+  sensor03:
+    image: python:3.11-slim
+    container_name: sensor03
+    volumes:
+      - ./sensors:/app
+    working_dir: /app
+    command: sh -c "pip install -q requests && python sensor.py sensor03"
+    networks:
+      iotnet:
+        ipv4_address: 172.30.0.13
+
+  fake-c2:
+    image: python:3.11-slim
+    container_name: fake-c2
+    volumes:
+      - ./c2:/app
+    working_dir: /app
+    command: python fake_c2.py
+    networks:
+      iotnet:
+        ipv4_address: 172.30.0.100
+
+  attacker:
+    image: python:3.11-slim
+    container_name: botnet-simulator
+    volumes:
+      - ./attacker:/app
+    working_dir: /app
+    command: tail -f /dev/null
+    networks:
+      iotnet:
+        ipv4_address: 172.30.0.200
+
+  monitor:
+    image: nicolaka/netshoot
+    container_name: traffic-monitor
+    volumes:
+      - ./dataset/pcaps:/pcaps
+      - ./monitor:/scripts
+    command: sleep infinity
+    network_mode: "service:sensor01"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+networks:
+  iotnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
