@@ -4,14 +4,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     hydra \
     hping3 \
-    nikto \
     dnsutils \
     curl \
     netcat-openbsd \
     iputils-ping \
     wget \
     ca-certificates \
+    git \
+    perl \
     && rm -rf /var/lib/apt/lists/*
+
+RUN git clone https://github.com/sullo/nikto.git /opt/nikto \
+    && ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto \
+    && chmod +x /usr/local/bin/nikto
 
 RUN wget -q https://github.com/OJ/gobuster/releases/download/v3.6.0/gobuster_Linux_x86_64.tar.gz \
     -O /tmp/gobuster.tar.gz \
