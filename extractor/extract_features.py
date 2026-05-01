@@ -1,237 +1,345 @@
 """
-extract_features.py — Extrator de features expandido
-Suporta todas as 20+ classes do simulador
+extract_features.py
+--------------------
+Pipeline completo: pcap → features de fluxo → correlação com attack_log → CSV rotulado.
+
+Uso:
+    python extract_features.py \
+        --pcap   dataset/pcaps/session01.pcap \
+        --labels dataset/labels/attack_log.jsonl \
+        --out    dataset/csv/session01_labeled.csv
+
+Dependências:
+    pip install pandas pyshark tqdm
+
+O script funciona em duas etapas:
+  1. Extrai pacotes do pcap via tshark e agrega em fluxos bidirecionais
+     (5-tupla: src_ip, dst_ip, src_port, dst_port, proto)
+  2. Para cada fluxo, determina o label consultando o attack_log.jsonl:
+     - Se o fluxo está dentro do intervalo [start_ts, end_ts] de um ataque → label = nome do ataque
+     - Caso contrário → label = "benign"
 """
-from scapy.all import rdpcap, IP, TCP, UDP, ICMP, DNS, Raw
-import pandas as pd
-import numpy as np
+
+import argparse
+import json
+import subprocess
 import sys
 import os
-import math
-from collections import Counter
+from collections import defaultdict
 
-def entropy(data: bytes) -> float:
-    if not data:
-        return 0.0
-    counts = Counter(data)
-    total = len(data)
-    return -sum((c/total) * math.log2(c/total) for c in counts.values())
+import pandas as pd
+import numpy as np
+from tqdm import tqdm
 
-def extract_flow_features(packets):
-    """Agrupa pacotes em fluxos e extrai features por fluxo"""
-    flows = {}
 
-    for pkt in packets:
-        if IP not in pkt:
+# ── Constantes ──────────────────────────────────────────────────────────────────
+
+# Campos extraídos via tshark — cada linha do pcap vira um dict com essas chaves
+TSHARK_FIELDS = [
+    "frame.time_epoch",       # timestamp Unix float
+    "ip.src",
+    "ip.dst",
+    "ip.proto",               # 6=TCP, 17=UDP, 1=ICMP
+    "ip.ttl",
+    "ip.len",                 # tamanho total do pacote IP
+    "tcp.srcport",
+    "tcp.dstport",
+    "udp.srcport",
+    "udp.dstport",
+    "tcp.flags",              # hex: 0x002=SYN, 0x010=ACK, 0x004=RST, etc.
+    "tcp.window_size_value",
+    "tcp.len",                # payload TCP
+    "udp.length",
+    "frame.len",              # tamanho do frame Ethernet
+]
+
+TSHARK_SEP = "|"
+
+
+# ── Extração de pacotes via tshark ───────────────────────────────────────────────
+
+def extract_packets(pcap_path: str) -> list[dict]:
+    """
+    Chama tshark e retorna lista de dicts, um por pacote IP.
+    Ignora pacotes não-IP (ARP, etc).
+    """
+    fields_args = []
+    for f in TSHARK_FIELDS:
+        fields_args += ["-e", f]
+
+    cmd = [
+        "tshark",
+        "-r", pcap_path,
+        "-T", "fields",
+        "-E", f"separator={TSHARK_SEP}",
+        "-E", "occurrence=f",   # pega só o primeiro valor de cada campo
+        "-E", "quote=n",
+    ] + fields_args
+
+    print(f"[*] Executando tshark em {pcap_path} ...")
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        print("[ERRO] tshark não encontrado. Instale com: apt install tshark")
+        sys.exit(1)
+
+    packets = []
+    for line in result.stdout.splitlines():
+        parts = line.split(TSHARK_SEP)
+        if len(parts) != len(TSHARK_FIELDS):
+            continue
+        pkt = dict(zip(TSHARK_FIELDS, parts))
+
+        # Ignora linhas sem IP src/dst (ARP, etc)
+        if not pkt["ip.src"] or not pkt["ip.dst"]:
             continue
 
-        proto = pkt[IP].proto
-        src = pkt[IP].src
-        dst = pkt[IP].dst
+        # Normaliza tipos
+        try:
+            pkt["frame.time_epoch"] = float(pkt["frame.time_epoch"])
+        except ValueError:
+            continue
 
-        sport = pkt[TCP].sport if TCP in pkt else (pkt[UDP].sport if UDP in pkt else 0)
-        dport = pkt[TCP].dport if TCP in pkt else (pkt[UDP].dport if UDP in pkt else 0)
+        for int_field in ["ip.proto", "ip.ttl", "ip.len", "tcp.window_size_value",
+                          "tcp.len", "udp.length", "frame.len"]:
+            try:
+                pkt[int_field] = int(pkt[int_field]) if pkt[int_field] else 0
+            except ValueError:
+                pkt[int_field] = 0
 
-        # Chave de fluxo bidirecional
-        key = tuple(sorted([(src, sport), (dst, dport)])) + (proto,)
+        # Porta src/dst unificada (TCP ou UDP)
+        pkt["src_port"] = int(pkt["tcp.srcport"] or pkt["udp.srcport"] or 0)
+        pkt["dst_port"] = int(pkt["tcp.dstport"] or pkt["udp.dstport"] or 0)
 
-        if key not in flows:
-            flows[key] = {
-                "src_ip": src, "dst_ip": dst,
-                "src_port": sport, "dst_port": dport,
-                "protocol": proto,
-                "timestamps": [], "lengths": [],
-                "tcp_flags": [], "payloads": [],
-                "directions": []
-            }
+        # Flags TCP como inteiro
+        try:
+            pkt["tcp_flags_int"] = int(pkt["tcp.flags"], 16) if pkt["tcp.flags"] else 0
+        except ValueError:
+            pkt["tcp_flags_int"] = 0
 
-        f = flows[key]
-        f["timestamps"].append(float(pkt.time))
-        f["lengths"].append(len(pkt))
-        f["directions"].append(0 if (src, sport) <= (dst, dport) else 1)
+        packets.append(pkt)
 
-        if TCP in pkt:
-            f["tcp_flags"].append(int(pkt[TCP].flags))
-        if Raw in pkt:
-            f["payloads"].append(bytes(pkt[Raw].load))
+    print(f"[*] {len(packets)} pacotes IP extraídos.")
+    return packets
+
+
+# ── Agregação em fluxos ──────────────────────────────────────────────────────────
+
+def flow_key(pkt: dict) -> tuple:
+    """
+    Chave bidirecional de fluxo (5-tupla ordenada).
+    Pacotes A→B e B→A pertencem ao mesmo fluxo.
+    """
+    src = (pkt["ip.src"], pkt["src_port"])
+    dst = (pkt["ip.dst"], pkt["dst_port"])
+    proto = pkt["ip.proto"]
+    if src < dst:
+        return (src[0], dst[0], src[1], dst[1], proto)
+    else:
+        return (dst[0], src[0], dst[1], src[1], proto)
+
+
+def aggregate_flows(packets: list[dict]) -> list[dict]:
+    """
+    Agrega pacotes em fluxos e computa features estatísticas por fluxo.
+    Retorna lista de dicts — um por fluxo.
+    """
+    flows = defaultdict(list)
+    for pkt in packets:
+        flows[flow_key(pkt)].append(pkt)
+
+    print(f"[*] {len(flows)} fluxos únicos encontrados.")
+    rows = []
+
+    for key, pkts in tqdm(flows.items(), desc="Computando features"):
+        pkts_sorted = sorted(pkts, key=lambda p: p["frame.time_epoch"])
+
+        ts      = [p["frame.time_epoch"] for p in pkts_sorted]
+        lengths = [p["frame.len"] for p in pkts_sorted]
+        iats    = [ts[i+1] - ts[i] for i in range(len(ts)-1)]  # inter-arrival times
+        flags   = [p["tcp_flags_int"] for p in pkts_sorted]
+        ttls    = [p["ip.ttl"] for p in pkts_sorted if p["ip.ttl"] > 0]
+
+        # Contagem de flags TCP individuais
+        syn_count  = sum(1 for f in flags if f & 0x002)
+        ack_count  = sum(1 for f in flags if f & 0x010)
+        rst_count  = sum(1 for f in flags if f & 0x004)
+        fin_count  = sum(1 for f in flags if f & 0x001)
+        psh_count  = sum(1 for f in flags if f & 0x008)
+        urg_count  = sum(1 for f in flags if f & 0x020)
+
+        n = len(pkts_sorted)
+        duration = ts[-1] - ts[0] if n > 1 else 0.0
+
+        row = {
+            # Identificação do fluxo
+            "src_ip":           key[0],
+            "dst_ip":           key[1],
+            "src_port":         key[2],
+            "dst_port":         key[3],
+            "protocol":         key[4],   # 6=TCP, 17=UDP, 1=ICMP
+
+            # Temporais
+            "flow_start_ts":    ts[0],
+            "flow_end_ts":      ts[-1],
+            "duration_s":       round(duration, 6),
+
+            # Volume
+            "pkt_count":        n,
+            "byte_count":       sum(lengths),
+            "pkt_per_sec":      round(n / duration, 4) if duration > 0 else 0,
+            "byte_per_sec":     round(sum(lengths) / duration, 4) if duration > 0 else 0,
+
+            # Tamanho de pacote
+            "pkt_len_mean":     round(np.mean(lengths), 4),
+            "pkt_len_std":      round(np.std(lengths), 4),
+            "pkt_len_min":      min(lengths),
+            "pkt_len_max":      max(lengths),
+
+            # Inter-arrival time
+            "iat_mean":         round(np.mean(iats), 6) if iats else 0,
+            "iat_std":          round(np.std(iats), 6) if iats else 0,
+            "iat_min":          round(min(iats), 6) if iats else 0,
+            "iat_max":          round(max(iats), 6) if iats else 0,
+
+            # Flags TCP
+            "syn_count":        syn_count,
+            "ack_count":        ack_count,
+            "rst_count":        rst_count,
+            "fin_count":        fin_count,
+            "psh_count":        psh_count,
+            "urg_count":        urg_count,
+            "syn_ratio":        round(syn_count / n, 4),
+            "rst_ratio":        round(rst_count / n, 4),
+
+            # TTL
+            "ttl_mean":         round(np.mean(ttls), 2) if ttls else 0,
+            "ttl_std":          round(np.std(ttls), 2) if ttls else 0,
+
+            # TCP window
+            "win_mean":         round(np.mean([p["tcp.window_size_value"] for p in pkts_sorted]), 2),
+
+            # Flags de padrão de ataque
+            "only_syn":         int(syn_count == n),          # SYN flood / scan
+            "syn_no_ack":       int(syn_count > 0 and ack_count == 0),
+            "has_rst":          int(rst_count > 0),
+        }
+        rows.append(row)
+
+    return rows
+
+
+# ── Correlação com attack_log ────────────────────────────────────────────────────
+
+def load_attack_log(label_path: str) -> list[dict]:
+    """Carrega o JSONL gerado pelo label_logger."""
+    attacks = []
+    if not os.path.exists(label_path):
+        print(f"[AVISO] attack_log não encontrado em {label_path}. Todos os fluxos serão 'benign'.")
+        return attacks
+    with open(label_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    attacks.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    print(f"[*] {len(attacks)} entradas no attack_log carregadas.")
+    return attacks
+
+
+def label_flow(flow_start: float, flow_end: float, attacks: list[dict]) -> str:
+    """
+    Retorna o label do ataque se o fluxo se sobrepõe com algum intervalo de ataque.
+    Usa sobreposição temporal: fluxo e ataque se sobrepõem se não são completamente separados.
+    Se múltiplos ataques se sobrepõem, retorna o de maior sobreposição.
+    """
+    best_label    = "benign"
+    best_overlap  = 0.0
+
+    for atk in attacks:
+        atk_start = atk.get("start_ts", 0)
+        atk_end   = atk.get("end_ts", 0)
+        if not atk_end:
+            continue
+
+        # Calcula sobreposição
+        overlap_start = max(flow_start, atk_start)
+        overlap_end   = min(flow_end,   atk_end)
+        overlap       = max(0.0, overlap_end - overlap_start)
+
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_label   = atk["attack"]
+
+    return best_label
+
+
+def label_flows(flows: list[dict], attacks: list[dict]) -> list[dict]:
+    """Adiciona coluna 'label' a cada fluxo."""
+    print("[*] Correlacionando fluxos com attack_log ...")
+    for flow in flows:
+        flow["label"] = label_flow(
+            flow["flow_start_ts"],
+            flow["flow_end_ts"],
+            attacks
+        )
+
+    # Resumo de distribuição de labels
+    from collections import Counter
+    dist = Counter(f["label"] for f in flows)
+    print("\n[*] Distribuição de labels:")
+    for label, count in sorted(dist.items(), key=lambda x: -x[1]):
+        pct = 100 * count / len(flows)
+        print(f"    {label:<30} {count:>6} fluxos  ({pct:.1f}%)")
 
     return flows
 
-def flow_to_features(flow_id, flow, label):
-    ts = sorted(flow["timestamps"])
-    lens = flow["lengths"]
-    iats = [ts[i+1] - ts[i] for i in range(len(ts)-1)] if len(ts) > 1 else [0]
-    payloads = flow["payloads"]
-    payload_bytes = b"".join(payloads)
 
-    fwd = [l for l, d in zip(lens, flow["directions"]) if d == 0]
-    bwd = [l for l, d in zip(lens, flow["directions"]) if d == 1]
+# ── Main ─────────────────────────────────────────────────────────────────────────
 
-    flags = flow["tcp_flags"]
-    syn_count  = sum(1 for f in flags if f & 0x02)
-    ack_count  = sum(1 for f in flags if f & 0x10)
-    fin_count  = sum(1 for f in flags if f & 0x01)
-    rst_count  = sum(1 for f in flags if f & 0x04)
-    psh_count  = sum(1 for f in flags if f & 0x08)
+def main():
+    parser = argparse.ArgumentParser(
+        description="pcap + attack_log → CSV de features rotulado"
+    )
+    parser.add_argument("--pcap",   required=True,  help="Caminho do arquivo .pcap")
+    parser.add_argument("--labels", required=True,  help="Caminho do attack_log.jsonl")
+    parser.add_argument("--out",    required=True,  help="Caminho do CSV de saída")
+    parser.add_argument("--min-pkts", type=int, default=2,
+                        help="Descarta fluxos com menos de N pacotes (default: 2)")
+    args = parser.parse_args()
 
-    duration = ts[-1] - ts[0] if len(ts) > 1 else 0
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
-    return {
-        # Identificação
-        "src_ip":     flow["src_ip"],
-        "dst_ip":     flow["dst_ip"],
-        "src_port":   flow["src_port"],
-        "dst_port":   flow["dst_port"],
-        "protocol":   flow["protocol"],
+    # 1. Extrai pacotes
+    packets = extract_packets(args.pcap)
+    if not packets:
+        print("[ERRO] Nenhum pacote extraído. Verifique o pcap.")
+        sys.exit(1)
 
-        # Volume
-        "pkt_count":       len(lens),
-        "total_bytes":     sum(lens),
-        "duration_sec":    round(duration, 6),
+    # 2. Agrega em fluxos
+    flows = aggregate_flows(packets)
 
-        # Tamanho de pacotes
-        "pkt_len_mean":    round(np.mean(lens), 2),
-        "pkt_len_std":     round(np.std(lens), 2),
-        "pkt_len_min":     min(lens),
-        "pkt_len_max":     max(lens),
+    # 3. Filtra fluxos muito pequenos (ruído)
+    flows = [f for f in flows if f["pkt_count"] >= args.min_pkts]
+    print(f"[*] {len(flows)} fluxos após filtro de mínimo {args.min_pkts} pacotes.")
 
-        # Inter-arrival time (IAT)
-        "iat_mean":    round(np.mean(iats), 6),
-        "iat_std":     round(np.std(iats), 6),
-        "iat_min":     round(min(iats), 6),
-        "iat_max":     round(max(iats), 6),
-        "iat_cv":      round(np.std(iats) / (np.mean(iats) + 1e-9), 4),  # beaconing detector
+    # 4. Carrega attack_log e rotula
+    attacks = load_attack_log(args.labels)
+    flows   = label_flows(flows, attacks)
 
-        # Direcionalidade
-        "fwd_pkt_count":   len(fwd),
-        "bwd_pkt_count":   len(bwd),
-        "fwd_bytes_mean":  round(np.mean(fwd), 2) if fwd else 0,
-        "bwd_bytes_mean":  round(np.mean(bwd), 2) if bwd else 0,
-        "bytes_ratio":     round(sum(fwd) / (sum(bwd) + 1e-9), 4),
+    # 5. Salva CSV
+    df = pd.DataFrame(flows)
 
-        # Taxa
-        "pkts_per_sec":    round(len(lens) / (duration + 1e-9), 2),
-        "bytes_per_sec":   round(sum(lens) / (duration + 1e-9), 2),
+    # Remove colunas de timestamp do flow (não são features, só foram usadas pra labeling)
+    df = df.drop(columns=["flow_start_ts", "flow_end_ts"], errors="ignore")
 
-        # TCP flags
-        "syn_count":   syn_count,
-        "ack_count":   ack_count,
-        "fin_count":   fin_count,
-        "rst_count":   rst_count,
-        "psh_count":   psh_count,
-        "syn_ack_ratio":   round(syn_count / (ack_count + 1e-9), 4),
+    df.to_csv(args.out, index=False)
+    print(f"\n[✓] CSV salvo em: {args.out}")
+    print(f"    Shape: {df.shape[0]} linhas × {df.shape[1]} colunas")
+    print(f"\n    Colunas:\n    {list(df.columns)}")
 
-        # Payload
-        "payload_pkt_count":  len(payloads),
-        "payload_total_bytes": len(payload_bytes),
-        "payload_entropy":    round(entropy(payload_bytes), 4),
-        "payload_mean_len":   round(np.mean([len(p) for p in payloads]), 2) if payloads else 0,
-
-        # Unique
-        "unique_dst_ports":   1,  # por fluxo sempre 1; útil ao agregar por IP
-        "has_payload":        int(len(payloads) > 0),
-
-        "label": label
-    }
-
-def extract_packet_features(packets, label):
-    """Feature por pacote individual (original + expandido)"""
-    rows = []
-    for pkt in packets:
-        if IP not in pkt:
-            continue
-
-        payload = bytes(pkt[Raw].load) if Raw in pkt else b""
-
-        row = {
-            "src_ip":       pkt[IP].src,
-            "dst_ip":       pkt[IP].dst,
-            "protocol":     pkt[IP].proto,
-            "packet_len":   len(pkt),
-            "ttl":          pkt[IP].ttl,
-            "ip_flags":     int(pkt[IP].flags),
-            "frag_offset":  pkt[IP].frag,
-            "src_port":     None,
-            "dst_port":     None,
-            "tcp_flags":    None,
-            "tcp_window":   None,
-            "payload_len":  len(payload),
-            "payload_entropy": round(entropy(payload), 4),
-            "has_payload":  int(len(payload) > 0),
-            "is_icmp":      int(ICMP in pkt),
-            "is_dns":       int(DNS in pkt),
-            "label":        label
-        }
-
-        if TCP in pkt:
-            row["src_port"]   = pkt[TCP].sport
-            row["dst_port"]   = pkt[TCP].dport
-            row["tcp_flags"]  = int(pkt[TCP].flags)
-            row["tcp_window"] = pkt[TCP].window
-        elif UDP in pkt:
-            row["src_port"] = pkt[UDP].sport
-            row["dst_port"] = pkt[UDP].dport
-
-        rows.append(row)
-    return rows
-
-def process_pcap(pcap_file, label, output_file, mode="flow"):
-    print(f"[*] Processando: {pcap_file} → label={label} modo={mode}")
-    packets = rdpcap(pcap_file)
-    print(f"    {len(packets)} pacotes lidos")
-
-    if mode == "flow":
-        flows = extract_flow_features(packets)
-        rows = [flow_to_features(k, v, label) for k, v in flows.items()]
-        print(f"    {len(rows)} fluxos extraídos")
-    else:
-        rows = extract_packet_features(packets, label)
-        print(f"    {len(rows)} pacotes extraídos")
-
-    df = pd.DataFrame(rows)
-    df.to_csv(output_file, index=False)
-    print(f"    [OK] Salvo em {output_file}")
-    return df
-
-def process_all(pcap_dir, csv_dir, mode="flow"):
-    """Processa todos os PCAPs e gera dataset unificado"""
-    os.makedirs(csv_dir, exist_ok=True)
-    dfs = []
-
-    # Mapeia arquivo → label
-    pcap_files = [f for f in os.listdir(pcap_dir) if f.endswith(".pcap")]
-
-    for pcap_file in sorted(pcap_files):
-        label = pcap_file.replace(".pcap", "")
-        input_path  = os.path.join(pcap_dir, pcap_file)
-        output_path = os.path.join(csv_dir, f"{label}.csv")
-
-        try:
-            df = process_pcap(input_path, label, output_path, mode)
-            dfs.append(df)
-        except Exception as e:
-            print(f"    [ERRO] {pcap_file}: {e}")
-
-    if dfs:
-        full = pd.concat(dfs, ignore_index=True)
-        full_path = os.path.join(csv_dir, "dataset_full.csv")
-        full.to_csv(full_path, index=False)
-        print(f"\n[DONE] Dataset completo: {full_path}")
-        print(f"       {len(full)} amostras | {full['label'].nunique()} classes")
-        print(f"\nDistribuição:")
-        print(full['label'].value_counts().to_string())
-        return full
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4:
-        # Modo individual: python extract_features.py arquivo.pcap label saida.csv
-        process_pcap(sys.argv[1], sys.argv[2], sys.argv[3], mode="flow")
-
-    elif len(sys.argv) == 3:
-        # Modo batch: python extract_features.py pcaps/ csv/
-        process_all(sys.argv[1], sys.argv[2], mode="flow")
-
-    else:
-        print("Uso:")
-        print("  Individual: python extract_features.py arquivo.pcap label saida.csv")
-        print("  Batch:      python extract_features.py pcaps/ csv/")
+    main()

@@ -1,0 +1,36 @@
+1777663766.6324914 CONNECT_ATTEMPT src=172.30.0.200:45110
+1777663766.6326754 CONNECT client_id='attacker-6690' src=172.30.0.200:45110
+1777663766.6328804 SUBSCRIBE topic='#' src=172.30.0.200:45110
+1777663767.1332023 PUBLISH topic='cmd/device/0' msg='{"cmd":"reboot"}' src=172.30.0.200:45110
+1777663767.4844642 PUBLISH topic='cmd/device/1' msg='{"cmd":"reboot"}' src=172.30.0.200:45110
+1777663767.8662064 PUBLISH topic='cmd/device/2' msg='{"cmd":"reboot"}' src=172.30.0.200:45110
+1777663768.137478 PUBLISH topic='cmd/device/3' msg='{"cmd":"reboot"}' src=172.30.0.200:45110
+1777663768.4254417 PUBLISH topic='cmd/device/4' msg='{"cmd":"reboot"}' src=172.30.0.200:45110
+1777663768.7723792 DISCONNECTED src=172.30.0.200:45110
+1777663768.7739067 CONNECT_ATTEMPT src=172.30.0.200:33818
+1777663768.7747083 CONNECT client_id='attacker-2551' src=172.30.0.200:33818
+1777663768.7749248 SUBSCRIBE topic='#' src=172.30.0.200:33818
+1777663769.2752862 PUBLISH topic='cmd/device/0' msg='{"cmd":"reboot"}' src=172.30.0.200:33818
+1777663769.5507739 PUBLISH topic='cmd/device/1' msg='{"cmd":"reboot"}' src=172.30.0.200:33818
+1777663769.88945 PUBLISH topic='cmd/device/2' msg='{"cmd":"reboot"}' src=172.30.0.200:33818
+1777663770.142001 PUBLISH topic='cmd/device/3' msg='{"cmd":"reboot"}' src=172.30.0.200:33818
+1777663770.472953 PUBLISH topic='cmd/device/4' msg='{"cmd":"reboot"}' src=172.30.0.200:33818
+1777663770.7374551 DISCONNECTED src=172.30.0.200:33818
+1777663973.1973014 CONNECT_ATTEMPT src=172.30.0.200:60866
+1777663973.1974337 CONNECT client_id='attacker-9241' src=172.30.0.200:60866
+1777663973.1976047 SUBSCRIBE topic='#' src=172.30.0.200:60866
+1777663973.6977909 PUBLISH topic='cmd/device/0' msg='{"cmd":"reboot"}' src=172.30.0.200:60866
+1777663974.0443368 PUBLISH topic='cmd/device/1' msg='{"cmd":"reboot"}' src=172.30.0.200:60866
+1777663974.4179223 PUBLISH topic='cmd/device/2' msg='{"cmd":"reboot"}' src=172.30.0.200:60866
+1777663974.7884734 PUBLISH topic='cmd/device/3' msg='{"cmd":"reboot"}' src=172.30.0.200:60866
+1777663975.108479 PUBLISH topic='cmd/device/4' msg='{"cmd":"reboot"}' src=172.30.0.200:60866
+1777663975.4381704 DISCONNECTED src=172.30.0.200:60866
+1777663975.4389892 CONNECT_ATTEMPT src=172.30.0.200:50946
+1777663975.4391024 CONNECT client_id='attacker-1726' src=172.30.0.200:50946
+1777663975.439286 SUBSCRIBE topic='#' src=172.30.0.200:50946
+1777663975.939549 PUBLISH topic='cmd/device/0' msg='{"cmd":"reboot"}' src=172.30.0.200:50946
+1777663976.2342675 PUBLISH topic='cmd/device/1' msg='{"cmd":"reboot"}' src=172.30.0.200:50946
+1777663976.6124535 PUBLISH topic='cmd/device/2' msg='{"cmd":"reboot"}' src=172.30.0.200:50946
+1777663976.8646262 PUBLISH topic='cmd/device/3' msg='{"cmd":"reboot"}' src=172.30.0.200:50946
+1777663977.206014 PUBLISH topic='cmd/device/4' msg='{"cmd":"reboot"}' src=172.30.0.200:50946
+1777663977.5662053 DISCONNECTED src=172.30.0.200:50946
