@@ -1,28 +1,30 @@
 FROM python:3.11-slim
 
-# Ferramentas de sistema
 RUN apt-get update && apt-get install -y --no-install-recommends \
     nmap \
     hydra \
     hping3 \
     nikto \
-    gobuster \
     dnsutils \
     curl \
     netcat-openbsd \
     iputils-ping \
-    wordlists \
+    wget \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Wordlist básica para gobuster/hydra
-# (rockyou fica grande demais; usamos uma compacta para o lab)
+RUN wget -q https://github.com/OJ/gobuster/releases/download/v3.6.0/gobuster_Linux_x86_64.tar.gz \
+    -O /tmp/gobuster.tar.gz \
+    && tar -xzf /tmp/gobuster.tar.gz -C /usr/local/bin gobuster \
+    && chmod +x /usr/local/bin/gobuster \
+    && rm /tmp/gobuster.tar.gz
+
 RUN mkdir -p /wordlists && \
-    echo -e "admin\nroot\npassword\n123456\ntest\nguest\niotdevice\ndevice\nsensor" \
+    printf 'admin\nroot\npassword\n123456\ntest\nguest\niotdevice\ndevice\nsensor\n' \
     > /wordlists/passwords.txt && \
-    echo -e "admin\nroot\napi\nv1\nv2\nstatus\nhealth\nconfig\nlogin\nbackup\ndashboard" \
+    printf 'admin\nroot\napi\nv1\nv2\nstatus\nhealth\nconfig\nlogin\nbackup\ndashboard\n' \
     > /wordlists/paths.txt
 
-# Dependências Python do orquestrador
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
