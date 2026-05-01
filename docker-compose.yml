@@ -57,11 +57,10 @@ services:
   monitor:
     image: nicolaka/netshoot
     container_name: traffic-monitor
+    network_mode: host
     volumes:
       - ./dataset/pcaps:/pcaps
-      - ./monitor:/scripts
     command: sleep infinity
-    network_mode: "service:sensor01"
     cap_add:
       - NET_ADMIN
       - NET_RAW
