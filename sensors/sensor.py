@@ -1,28 +1,28 @@
-importsocket
-importtime
-importrandom
-importsys
-importjson
+import socket
+import time
+import random
+import sys
+import json
 
-sensor_id=sys.argv[1]iflen(sys.argv)>1else"sensor"
+sensor_id = sys.argv[1] if len(sys.argv) > 1 else "sensor"
 
-C2_HOST="172.30.0.100"
-C2_PORT=8080
+C2_HOST = "172.30.0.100"
+C2_PORT = 8080
 
-whileTrue:
-payload= {
-"sensor":sensor_id,
-"temperature":round(random.uniform(20,35),2),
-"humidity":round(random.uniform(40,80),2),
-"timestamp":time.time()
+while True:
+    payload = {
+        "sensor": sensor_id,
+        "temperature": round(random.uniform(20, 35), 2),
+        "humidity": round(random.uniform(40, 80), 2),
+        "timestamp": time.time()
     }
 
-try:
-s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-s.connect((C2_HOST,C2_PORT))
-s.send(json.dumps(payload).encode())
-s.close()
-exceptException:
-pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.connect((C2_HOST, C2_PORT))
+        s.send(json.dumps(payload).encode())
+        s.close()
+    except Exception:
+        pass
 
-time.sleep(random.randint(2,5))
+    time.sleep(random.randint(2, 5))
